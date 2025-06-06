@@ -1,5 +1,7 @@
 from fastapi import FastAPI, Query, Body
 import requests
+from bs4 import BeautifulSoup
+from collections import defaultdict
 from fastapi.middleware.cors import CORSMiddleware
 import anthropic
 from pyppeteer import launch
@@ -35,6 +37,33 @@ async def get_browser():
         )
     return browser_instance
 
+def scrape_and_sort_by_class(url):
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, 'html.parser')
+
+    class_groups = defaultdict(list)
+
+    for element in soup.find_all(class_=True):
+        classes = element.get('class')
+        for class_name in classes:
+            class_groups[class_name].append({
+                'tag': element.name,
+                'attributes': dict(element.attrs),
+                'text': element.get_text(strip=True)
+            })
+    
+    # Sort by number of instances (descending order) and get top 10
+    sorted_items = sorted(
+        class_groups.items(), 
+        key=lambda item: len(item[1]), 
+        reverse=True
+    )
+    
+    # Take only the first 10 items and convert back to dict
+    top_10_class_groups = dict(sorted_items[:25])
+    
+    return top_10_class_groups
+
 async def screenshot(url):
     output_path = "images/screenshot.png"
     browser = await get_browser()
@@ -66,9 +95,15 @@ def encode_image_to_base64(image_path):
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
 
-async def clone_from_image(url):
+async def clone(url):
     try:
         await screenshot(url)
+        top_classes = scrape_and_sort_by_class(url)
+
+        class_info = "Top CSS classes found on this webpage:\n"
+        for class_name, elements in top_classes.items():
+            class_info += f"- .{class_name} (used {len(elements)} times)\n"
+        
         client = anthropic.Anthropic(
             api_key=(os.getenv("ANTHROPIC_API_KEY"))
         )
@@ -77,7 +112,7 @@ async def clone_from_image(url):
             model="claude-sonnet-4-20250514",
             max_tokens=8000,
             temperature=0.1,
-            system="You are an expert web developer. Create a complete HTML replica based on the screenshot. Return ONLY the HTML code with embedded CSS and JavaScript. No explanations, no markdown blocks, no analysis. Start with <!DOCTYPE html> and end with </html>.",
+            system="You are an expert web developer. Create a complete HTML replica based on the screenshot and top 25 classes from the webpage. Return ONLY the HTML code with embedded CSS and JavaScript. No explanations, no markdown blocks, no analysis. Start with <!DOCTYPE html> and end with </html>.",
             
             messages=[
                 {
@@ -93,7 +128,7 @@ async def clone_from_image(url):
                         },
                         {
                             "type": "text",
-                            "text": f"Clone this website (URL: {url}). Return ONLY raw HTML code. No markdown, no backticks, no explanations. Just pure HTML starting with <!DOCTYPE html>."
+                            "text": f"Clone this website (URL: {url}). {class_info}. Return ONLY raw HTML code. No markdown, no backticks, no explanations. Just pure HTML starting with <!DOCTYPE html>."
                         }
                     ]
                 }
@@ -127,7 +162,7 @@ async def clone_url_post(data: dict = Body(...)):
         return {"error": "URL is required"}
     
     try:
-        cloned_html = await clone_from_image(url)
+        cloned_html = await clone(url)
         print("Generated HTML length:", len(cloned_html))
         return {"html": cloned_html}
     except Exception as e:
