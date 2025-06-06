@@ -77,6 +77,8 @@ async def screenshot(url):
             'timeout': 10000
         })
 
+        await asyncio.sleep(2) # Wait for any dynamic content to load
+
         await page.screenshot({
             'path': output_path,
             'fullPage': False,
